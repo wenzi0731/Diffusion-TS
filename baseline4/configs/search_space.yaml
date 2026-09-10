@@ -1,0 +1,15 @@
+# 3 learning rates x 2 widths = exactly 6 trials, tuning seed 42.
+# Other settings, including T=1000 and DDIM steps=100, are fixed.
+configurations:
+  - id: c01_w96_lr1e5
+    overrides: {model.d_model: 96, training.learning_rate: 0.00001}
+  - id: c02_w96_lr5e5
+    overrides: {model.d_model: 96, training.learning_rate: 0.00005}
+  - id: c03_w96_lr1e4
+    overrides: {model.d_model: 96, training.learning_rate: 0.0001}
+  - id: c04_w128_lr1e5
+    overrides: {model.d_model: 128, training.learning_rate: 0.00001}
+  - id: c05_w128_lr5e5
+    overrides: {model.d_model: 128, training.learning_rate: 0.00005}
+  - id: c06_w128_lr1e4
+    overrides: {model.d_model: 128, training.learning_rate: 0.0001}

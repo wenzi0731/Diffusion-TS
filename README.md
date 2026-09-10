@@ -1,5 +1,7 @@
 # Diffusion-TS: Interpretable Diffusion for General Time Series Generation
 
+> HEEW baseline-4 条件四通道场景生成：请查看 [README_BASELINE4.md](README_BASELINE4.md)。包含六组验证集调参、最佳配置导出、五种子训练和统一评估。
+
 [![](https://img.shields.io/github/stars/Y-debug-sys/Diffusion-TS.svg)](https://github.com/Y-debug-sys/Diffusion-TS/stargazers)
 [![](https://img.shields.io/github/forks/Y-debug-sys/Diffusion-TS.svg)](https://github.com/Y-debug-sys/Diffusion-TS/network) 
 [![](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/Y-debug-sys/Diffusion-TS/blob/main/LICENSE) 
