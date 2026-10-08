@@ -73,76 +73,13 @@ def summarize(
     precision_recall_k: int = 5,
     max_precision_samples: int = 10_000,
 ) -> dict[str, float]:
-    values = np.asarray(samples, dtype=np.float64)
-    truth = np.asarray(target, dtype=np.float64)
-    if values.ndim != 4 or truth.shape != (
-        values.shape[0],
-        values.shape[2],
-        values.shape[3],
-    ):
-        raise ValueError("Expected samples [N,S,C,T] and target [N,C,T].")
-    channels = values.shape[2]
-    if len(labels) != channels:
-        raise ValueError("The number of labels must match the channel count.")
-    mean = np.asarray(target_mean, dtype=np.float64).reshape(-1)
-    std = np.maximum(np.asarray(target_std, dtype=np.float64).reshape(-1), 1e-8)
-    if mean.shape != (channels,) or std.shape != (channels,):
-        raise ValueError("target_mean/std must contain one value per channel.")
-    values_z = (values - mean.reshape(1, 1, channels, 1)) / std.reshape(
-        1, 1, channels, 1
+    """Use the baseline5 evaluation contract; training CRPS remains unchanged."""
+    from baseline4.aligned_metrics import summarize as aligned_summarize
+
+    return aligned_summarize(
+        samples, target, labels, target_mean, target_std, seed,
+        precision_recall_k, max_precision_samples,
     )
-    truth_z = (truth - mean.reshape(1, channels, 1)) / std.reshape(
-        1, channels, 1
-    )
-    error = values.mean(axis=1) - truth
-    error_z = values_z.mean(axis=1) - truth_z
-    scores = crps_map(values, truth)
-    result: dict[str, float] = {}
-    channel_ncrps: list[float] = []
-    for channel, label in enumerate(labels):
-        channel_target = truth[:, channel]
-        channel_crps = scores[:, channel]
-        lower90 = np.quantile(values[:, :, channel], 0.05, axis=1)
-        upper90 = np.quantile(values[:, :, channel], 0.95, axis=1)
-        lower95 = np.quantile(values[:, :, channel], 0.025, axis=1)
-        upper95 = np.quantile(values[:, :, channel], 0.975, axis=1)
-        generated_pool = values_z[:, :, channel].reshape(-1, values.shape[-1])
-        if len(generated_pool) > max_precision_samples:
-            random = np.random.default_rng(seed + 1000 + channel)
-            selected = random.choice(
-                len(generated_pool), size=max_precision_samples, replace=False
-            )
-            generated_pool = generated_pool[selected]
-        precision, recall = compute_precision_recall(
-            generated_pool, truth_z[:, channel], precision_recall_k
-        )
-        ncrps = float(
-            np.sum(channel_crps) / (np.sum(np.abs(channel_target)) + 1e-8)
-        )
-        channel_ncrps.append(ncrps)
-        result[f"{label}_RMSE"] = float(np.sqrt(np.mean(error[:, channel] ** 2)))
-        result[f"{label}_MAE"] = float(np.mean(np.abs(error[:, channel])))
-        result[f"{label}_RMSE_Z"] = float(
-            np.sqrt(np.mean(error_z[:, channel] ** 2))
-        )
-        result[f"{label}_MAE_Z"] = float(np.mean(np.abs(error_z[:, channel])))
-        result[f"{label}_CRPS"] = float(np.mean(channel_crps))
-        result[f"{label}_nCRPS"] = ncrps
-        result[f"{label}_Coverage90"] = float(
-            np.mean((channel_target >= lower90) & (channel_target <= upper90))
-        )
-        result[f"{label}_IntervalWidth90"] = float(np.mean(upper90 - lower90))
-        result[f"{label}_Precision_Z"] = precision
-        result[f"{label}_Recall_Z"] = recall
-        result[f"{label}_CR"] = float(
-            np.mean((channel_target >= lower95) & (channel_target <= upper95))
-        )
-        result[f"{label}_IW"] = float(np.mean(upper95 - lower95))
-    result["mean_nCRPS"] = float(
-        np.sum(scores) / (np.sum(np.abs(truth)) + 1e-8)
-    )
-    result["macro_nCRPS"] = float(np.mean(channel_ncrps))
-    return result
 
 
 def compute_global_pearson_matrix(total_data: np.ndarray) -> np.ndarray:

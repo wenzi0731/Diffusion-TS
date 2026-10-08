@@ -1,22 +1,20 @@
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 import argparse
-import csv
 import json
 import time
-from pathlib import Path
 
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
 from baseline4.data import HEEWConditionDataset
-from baseline4.metrics import (
-    save_global_pearson_comparison,
-    save_global_pearson_plot,
-    save_random_timeseries_plots,
-    summarize,
-)
+from baseline4.reporting import require_empty_output, write_report
 from baseline4.model import ConditionalDiffusionTS, generate_scenarios
 from baseline4.runtime import choose_device, load_checkpoint, resolve_path, seed_everything
 from baseline4.train import data_manifest
@@ -27,9 +25,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--energy-path", default=None)
     parser.add_argument("--weather-path", default=None)
-    parser.add_argument("--outdir", default=None)
+    parser.add_argument("--outdir", "--output-dir", default=None)
     parser.add_argument("--device", default="auto")
-    parser.add_argument("--scenarios", type=int, default=None)
+    parser.add_argument("--scenarios", "--num-scenarios", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--no-plots", action="store_true")
     parser.add_argument("--seed", type=int, default=None)
@@ -70,13 +68,12 @@ def main() -> None:
         if args.outdir
         else checkpoint_path.parent / "evaluation_test"
     )
-    if (output_dir / "global_metrics.json").exists():
-        raise FileExistsError("Evaluation already exists; choose a new --outdir")
-    output_dir.mkdir(parents=True, exist_ok=True)
+    require_empty_output(output_dir)
 
     generated_batches: list[np.ndarray] = []
     target_batches: list[np.ndarray] = []
     condition_batches: list[np.ndarray] = []
+    year_batches: list[np.ndarray] = []
     dates: list[str] = []
     noise_generator = torch.Generator(device=device).manual_seed(seed + 90_000)
     elapsed = 0.0
@@ -105,12 +102,15 @@ def main() -> None:
             if device.type == "cuda":
                 torch.cuda.synchronize(device)
             elapsed += time.perf_counter() - start
+            if not torch.isfinite(generated_z).all():
+                raise FloatingPointError("Nonfinite generated scenarios before denormalization")
             generated = dataset.denormalize(generated_z)
             target_physical = dataset.denormalize(target)
             generated[:, :, 3].clamp_(min=0.0)
             generated_batches.append(generated.cpu().numpy())
             target_batches.append(target_physical.cpu().numpy())
             condition_batches.append(conditions.cpu().numpy())
+            year_batches.append(pv_year.cpu().numpy())
             dates.extend(list(batch_dates[:take]))
             processed += take
 
@@ -118,66 +118,47 @@ def main() -> None:
     target_values = np.concatenate(target_batches)
     condition_values = np.concatenate(condition_batches)
     labels = list(dataset.target_cols)
-    metrics = summarize(
-        generated_values,
-        target_values,
-        labels,
-        dataset.target_mean,
-        dataset.target_std,
-        seed=seed,
+    archive = output_dir / "baseline4_scenarios.npz"
+    metrics = write_report(
+        generated_values, target_values, dataset.target_mean, dataset.target_std,
+        dates, labels, output_dir, seed=seed, no_plots=args.no_plots,
         precision_recall_k=int(config["evaluation"]["precision_recall_k"]),
         max_precision_samples=int(config["evaluation"]["max_precision_samples"]),
+        metadata={
+            "method": "conditional-diffusion-ts-baseline4",
+            "checkpoint": str(checkpoint_path),
+            "checkpoint_epoch": checkpoint.get("epoch"),
+            "split": "test-2022",
+            "partial_test": len(target_values) != len(dataset),
+            "training_seed": int(config["run"]["seed"]),
+            "sample_seed": seed + 90_000,
+            "sampler": "DDIM_eta0",
+            "training_timesteps": int(generator.num_timesteps),
+            "sampling_steps": int(generator.sampling_timesteps),
+            "sampling_chunk_size": int(config["evaluation"]["sample_chunk_size"]),
+            "sampling_batch_size": args.batch_size,
+            "sampling_seconds": elapsed,
+            "seconds_per_1000_scenarios": elapsed * 1000 / (len(target_values) * args.scenarios),
+            "archive": str(archive),
+        },
     )
-    if not args.no_plots:
-        metrics.update(
-            save_global_pearson_comparison(
-                target_values, generated_values, output_dir / "pearson", labels
-            )
-        )
-    metrics["sampling_seconds"] = elapsed
-    metrics["seconds_per_1000_scenarios"] = (
-        elapsed * 1000.0 / (len(target_values) * args.scenarios)
-    )
-    metrics["num_test_days"] = int(len(target_values))
-    metrics["scenarios_per_day"] = int(args.scenarios)
-    metrics["seed"] = seed
-    metrics["sampler"] = "DDIM_eta0"
-    metrics["training_timesteps"] = generator.num_timesteps
-    metrics["sampling_steps"] = generator.sampling_timesteps
-    metrics["sample_seed"] = seed + 90000
-    metrics["sampling_chunk_size"] = int(config["evaluation"]["sample_chunk_size"])
-
-    if not args.no_plots:
-        save_global_pearson_plot(
-            target_values, output_dir / "global_pearson.png", labels
-        )
-        save_random_timeseries_plots(
-            target_values,
-            generated_values,
-            dates,
-            output_dir / "random_timeseries_50",
-            labels,
-            seed=seed,
-            n_plots=50,
-        )
     np.savez_compressed(
-        output_dir / "baseline4_scenarios.npz",
+        archive,
         scenarios=generated_values,
         targets=target_values,
         conditions=condition_values,
+        pv_year=np.concatenate(year_batches),
         dates=np.asarray(dates),
+        channel_names=np.asarray(labels),
         target_mean=dataset.target_mean,
         target_std=dataset.target_std,
+        seed=seed,
+        sample_seed=seed + 90_000,
+        sampler="DDIM_eta0",
+        num_scenarios=args.scenarios,
+        metadata_json=json.dumps(metrics, allow_nan=False),
     )
-    with (output_dir / "global_metrics.json").open("w", encoding="utf-8") as handle:
-        json.dump(metrics, handle, indent=2)
-    with (output_dir / "global_metrics.csv").open(
-        "w", encoding="utf-8", newline=""
-    ) as handle:
-        writer = csv.writer(handle)
-        writer.writerow(["metric", "value"])
-        writer.writerows(metrics.items())
-    print(json.dumps(metrics, ensure_ascii=False, indent=2))
+    print(json.dumps(metrics, ensure_ascii=False, indent=2, allow_nan=False))
 
 
 if __name__ == "__main__":
